@@ -1,0 +1,236 @@
+-- 8 queries using SQL on Google Big Query
+
+-- Query 01: calculate total visit, pageview, transaction for Jan, Feb and March 2017 (order by month)
+SELECT
+  format_date ("%Y%m",
+    PARSE_DATE("%Y%m%d", date)) AS month,
+  SUM(totals.newVisits) AS visits,
+  SUM(totals.pageviews) AS pageviews,
+  SUM(totals.transactions) AS transactions
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+WHERE
+  _TABLE_SUFFIX BETWEEN '20170101'
+  AND '20170331'
+GROUP BY
+  month
+ORDER BY
+  month;
+
+-- Query 02: Bounce rate per traffic source in July 2017 (Bounce_rate = num_bounce/total_visit) (order by total_visit DESC)
+SELECT
+  DISTINCT trafficSource.source AS SOURCE,
+  COUNT(totals.visits) AS totals_visit,
+  COUNT(totals.bounces) AS totals_no_of_bounces,
+  ROUND(COUNT(totals.bounces)/ COUNT(totals.visits)*100, 100) AS bounce_rate
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_201707*`
+GROUP BY SOURCE
+ORDER BY totals_visit DESC ;
+
+-- Query 3: Revenue by traffic source by week, by month in June 2017
+SELECT
+  'Month' AS time_type,
+  FORMAT_DATE("%Y%m", PARSE_DATE("%Y%m%d", date)) AS time,
+  trafficSource.source AS SOURCE,
+  SUM(totals.totalTransactionRevenue) AS revenue
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_201706*`
+WHERE
+  totals.totalTransactionRevenue IS NOT NULL
+GROUP BY
+  FORMAT_DATE("%Y%m", PARSE_DATE("%Y%m%d", date)),
+  trafficSource.source
+UNION ALL
+SELECT
+  'Week' AS time_type,
+  FORMAT_DATE("%Y%w", PARSE_DATE("%Y%m%d", date)) AS time,
+  trafficSource.source AS SOURCE,
+  SUM(totals.totalTransactionRevenue) AS revenue
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_201706*`
+WHERE
+  totals.totalTransactionRevenue IS NOT NULL
+GROUP BY
+  FORMAT_DATE("%Y%w", PARSE_DATE("%Y%m%d", date)),
+  trafficSource.source
+
+-- Query 04: Average number of pageviews by purchaser type (purchasers vs non-purchasers) in June, July 2017.
+WITH
+  purchase AS (
+  SELECT
+    FORMAT_DATE("%Y%m", PARSE_DATE("%Y%m%d", date)) AS month,
+    SUM(totals.pageviews)/COUNT(DISTINCT fullVisitorId) AS avg_pageviews_purchase
+  FROM
+    `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
+    UNNEST (hits) hits,
+    UNNEST (hits.product) product
+  WHERE
+    _TABLE_SUFFIX BETWEEN '0601'
+    AND '0730'
+    AND totals.transactions >= 1
+    AND product.productRevenue IS NOT NULL
+  GROUP BY
+    month
+  ORDER BY
+    month ),
+  non_purchase AS (
+  SELECT
+    FORMAT_DATE("%Y%m", PARSE_DATE("%Y%m%d", date)) AS month,
+    SUM(totals.pageviews)/COUNT(DISTINCT fullVisitorId) AS avg_pageviews_non_purchase
+  FROM
+    `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
+    UNNEST (hits) hits,
+    UNNEST (hits.product) product
+  WHERE
+    _TABLE_SUFFIX BETWEEN '0601'
+    AND '0730'
+    AND totals.transactions IS NULL
+    AND product.productRevenue IS NULL
+  GROUP BY
+    month
+  ORDER BY
+    month )
+SELECT
+  p.month,
+  p.avg_pageviews_purchase,
+  n.avg_pageviews_non_purchase,
+FROM
+  purchase AS p
+INNER JOIN
+  non_purchase AS n
+USING
+  (month)
+ORDER BY
+  month;
+
+-- Query 05: Average number of transactions per user that made a purchase in July 2017
+SELECT
+  FORMAT_DATE("%Y%m", PARSE_DATE("%Y%m%d", date)) AS month,
+  SUM(totals.transactions)/COUNT(DISTINCT fullVisitorId) AS Avg_total_transactions_per_user
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_2017*`,
+  UNNEST (hits) hits,
+  UNNEST (hits.product) product
+WHERE
+  _TABLE_SUFFIX BETWEEN '0701'
+  AND '0730'
+  AND totals.transactions >= 1
+  AND product.productRevenue IS NOT NULL
+GROUP BY
+  month;
+
+-- Query 06: Average amount of money spent per session. Only include purchaser data in July 2017
+SELECT
+  201707 AS month,
+  SUM(product.productRevenue)/COUNT(totals.visits) AS avg_revenue_by_user_per_visit
+FROM
+  `bigquery-public-data.google_analytics_sample.ga_sessions_201707*`,
+  UNNEST (hits) hits,
+  UNNEST (hits.product) product
+WHERE
+  totals.transactions IS NOT NULL
+  AND product.productRevenue IS NOT null
+
+-- #Query 07: Other products purchased by customers who purchased product "YouTube Men's Vintage Henley" in July 2017. Output should show product name and the quantity was ordered.
+WITH Q AS(
+SELECT 
+  fullVisitorId AS ID,
+  v2ProductName,
+  productQuantity
+FROM `bigquery-public-data.google_analytics_sample.ga_sessions_201707*`,
+ UNNEST (hits) hits,
+ UNNEST (hits.product) product
+WHERE v2ProductName <> "YouTube Men's Vintage Henley"
+AND product.productRevenue IS NOT NULL),
+U AS(
+SELECT 
+  fullVisitorId AS ID,
+  v2ProductName
+FROM `bigquery-public-data.google_analytics_sample.ga_sessions_201707*`,
+ UNNEST (hits) hits,
+ UNNEST (hits.product) product
+WHERE v2ProductName = "YouTube Men's Vintage Henley"
+AND product.productRevenue IS NOT NULL)
+SELECT 
+ Q.v2ProductName AS other_purchased_products,
+ SUM(Q.productQuantity) AS quantity
+FROM Q
+INNER JOIN U
+USING(ID)
+GROUP BY Q.v2ProductName
+ORDER BY quantity DESC;
+
+--Query 08: Calculate cohort map from product view to addtocart to purchase in Jan, Feb and March 2017. For example, 100% product view then 40% add_to_cart and 10% purchase. Add_to_cart_rate = number product  add to cart/number product view. Purchase_rate = number product purchase/number product view. The output should be calculated in product level.
+WITH
+  a AS(
+  SELECT
+    format_date ("%Y%m",
+      PARSE_DATE("%Y%m%d", date)) AS month,
+    COUNT(eCommerceAction.action_type) AS num_product_view
+  FROM
+    `bigquery-public-data.google_analytics_sample.ga_sessions_*`,
+    UNNEST (hits) hits,
+    UNNEST (hits.product) product
+  WHERE
+    _TABLE_SUFFIX BETWEEN '20170101'
+    AND '20170331'
+    AND eCommerceAction.action_type = '2'
+  GROUP BY
+    month
+  ORDER BY
+    month),
+  b AS(
+  SELECT
+    format_date ("%Y%m",
+      PARSE_DATE("%Y%m%d", date)) AS month,
+    COUNT(eCommerceAction.action_type) AS num_addtocart
+  FROM
+    `bigquery-public-data.google_analytics_sample.ga_sessions_*`,
+    UNNEST (hits) hits,
+    UNNEST (hits.product) product
+  WHERE
+    _TABLE_SUFFIX BETWEEN '20170101'
+    AND '20170331'
+    AND eCommerceAction.action_type = '3'
+  GROUP BY
+    month
+  ORDER BY
+    month),
+  c AS(
+  SELECT
+    format_date ("%Y%m",
+      PARSE_DATE("%Y%m%d", date)) AS month,
+    COUNT(eCommerceAction.action_type) AS num_purchase
+  FROM
+    `bigquery-public-data.google_analytics_sample.ga_sessions_*`,
+    UNNEST (hits) hits,
+    UNNEST (hits.product) product
+  WHERE
+    _TABLE_SUFFIX BETWEEN '20170101'
+    AND '20170331'
+    AND eCommerceAction.action_type = '6'
+    AND product.productRevenue IS NOT NULL
+  GROUP BY
+    month
+  ORDER BY
+    month )
+SELECT
+  a.month,
+  a.num_product_view,
+  b.num_addtocart,
+  c.num_purchase,
+  b.num_addtocart/a.num_product_view*100 AS add_to_cart_rate,
+  num_purchase/a.num_product_view*100 AS purchase_rate
+FROM
+  a
+FULL OUTER JOIN
+  b
+USING
+  (month)
+FULL JOIN
+  c
+USING
+  (month)
+ORDER BY
+  month
